@@ -3,18 +3,53 @@
 
 #include <cmocka.h>
 #include <stdio.h>
+#include <string.h>
 #include <wayland-util.h>
 
 #include "cfg.h"
 #include "head.h"
 #include "marshalling.h"
 #include "slist.h"
+#include "stable.h"
 #include "util.h"
 
-#define assert_string_equal_nn(a, b) \
-	assert_non_null(a); \
-	assert_non_null(b); \
-    _assert_string_equal((a), (b), __FILE__, __LINE__)
+void _assert_nul(const void *a, const char * const ae, const char * const file, const int line) {
+	if (a) {
+		cm_print_error("%s is not NULL\n", ae);
+		_fail(file, line);
+	}
+}
+#define assert_nul(a) _assert_nul(a, #a, __FILE__, __LINE__)
+
+void _assert_non_nul(const void *a, const char * const ae, const char * const file, const int line) {
+	if (!a) {
+		cm_print_error("%s is NULL\n", ae);
+		_fail(file, line);
+	}
+}
+#define assert_non_nul(a) _assert_non_nul(a, #a, __FILE__, __LINE__)
+
+void _assert_str_equal(const char * const a, const char * const ae, const char * const b, const char * const be, const char * const file, const int line) {
+	if (!a && !b)
+		return;
+	_assert_non_nul(a, ae, file, line);
+	_assert_non_nul(b, be, file, line);
+	_assert_string_equal(a, b, file, line);
+}
+#define assert_str_equal(a, b) _assert_str_equal(a, #a, b, #b, __FILE__, __LINE__)
+
+void _assert_str_equal_n(const char * const a, const char * const ae, const char * const b, const char * const be, const size_t n, const char * const file, const int line) {
+	if (!a && !b)
+		return;
+	_assert_non_nul(a, ae, file, line);
+	_assert_non_nul(b, be, file, line);
+	if (strncmp(a, b, n) != 0) {
+		cm_print_error("\"%.*s\" != \"%.*s\"\n", (int)n, a, (int)n, b);
+		_fail(file, line);
+	}
+}
+
+#define assert_str_equal_n(a, b, n) _assert_str_equal_n(a, #a, b, #b, n, __FILE__, __LINE__)
 
 void _assert_wl_fixed_t_equal_double(wl_fixed_t a, double b, const char * const file, const int line) {
 
@@ -74,6 +109,11 @@ void _assert_log(enum LogThreshold t, const char* s, const char * const file, co
 
 void _assert_logs_empty(const char * const file, const int line);
 #define assert_logs_empty() _assert_logs_empty(__FILE__, __LINE__)
+
+int expect_stable_equal(const LargestIntegralType value,
+		const LargestIntegralType check_value_data) {
+	return stable_equal((struct STable*)value, (struct STable*)check_value_data, NULL);
+}
 
 #endif // ASSERTS_H
 

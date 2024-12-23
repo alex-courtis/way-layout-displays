@@ -9,12 +9,14 @@
 #include <wayland-util.h>
 
 #include "cfg.h"
+#include "displ.h"
 #include "global.h"
 #include "head.h"
 #include "info.h"
 #include "log.h"
 #include "mode.h"
 #include "slist.h"
+#include "stable.h"
 #include "wlr-output-management-unstable-v1.h"
 
 struct SList *order_heads(struct SList *order_name_desc, struct SList *heads);
@@ -60,6 +62,8 @@ int after_all(void **state) {
 int before_each(void **state) {
 	cfg = cfg_default();
 
+	displ = calloc(1, sizeof(struct Displ));
+
 	struct State *s = calloc(1, sizeof(struct State));
 
 	s->mode = calloc(1, sizeof(struct Mode));
@@ -79,8 +83,11 @@ int after_each(void **state) {
 
 	slist_free(&heads);
 
-	head_changing_mode = NULL;
-	head_changing_adaptive_sync = NULL;
+	assert_nul(displ->delta.head);
+	assert_int_equal(displ->delta.element, 0);
+	assert_nul(displ->delta.human);
+
+	free(displ);
 
 	cfg_destroy();
 
@@ -594,13 +601,13 @@ void handle_success__head_changing_adaptive_sync(void **state) {
 		.current.adaptive_sync = ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_ENABLED,
 		.adaptive_sync_failed = false,
 	};
-	head_changing_adaptive_sync = &head;
+	displ->delta.element = VRR_OFF;
+	displ->delta.head = &head;
 
 	handle_success();
 
 	assert_log(INFO, "\nChanges successful\n");
 
-	assert_null(head_changing_adaptive_sync);
 	assert_false(head.adaptive_sync_failed);
 }
 
@@ -611,7 +618,8 @@ void handle_success__head_changing_adaptive_sync_fail(void **state) {
 		.desired.adaptive_sync = ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_ENABLED,
 		.current.adaptive_sync = ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_DISABLED,
 	};
-	head_changing_adaptive_sync = &head;
+	displ->delta.element = VRR_OFF;
+	displ->delta.head = &head;
 
 	handle_success();
 
@@ -621,7 +629,6 @@ void handle_success__head_changing_adaptive_sync_fail(void **state) {
 			"  VRR_OFF:\n"
 			"    - 'monitor description'\n");
 
-	assert_null(head_changing_adaptive_sync);
 	assert_true(head.adaptive_sync_failed);
 }
 
@@ -630,26 +637,33 @@ void handle_success__head_changing_mode(void **state) {
 	struct Head head = {
 		.desired.mode = &mode,
 	};
-	head_changing_mode = &head;
+	displ->delta.element = MODE;
+	displ->delta.head = &head;
 
 	handle_success();
 
 	assert_log(INFO, "\nChanges successful\n");
 
 	assert_ptr_equal(head.current.mode, &mode);
-	assert_null(head_changing_mode);
 }
 
 void handle_success__change_success_cmd(void **state) {
 	cfg->change_success_cmd = strdup("echo \"hi from way-displays\"");
+	displ->delta.human = strdup("DP-1: enabled\n  mode: xx->yy");
 
-	expect_value(__wrap_spawn_sh_cmd, command, cfg->change_success_cmd);
+	const struct STable *env = stable_init(1, 1, false);
+	stable_put(env, "WD_CHANGE_SUCCESS_MSG", displ->delta.human);
+
+	expect_string(__wrap_spawn_sh_cmd, command, cfg->change_success_cmd);
+	expect_check(__wrap_spawn_sh_cmd, message, expect_stable_equal, env);
 
 	handle_success();
 
 	assert_log(INFO, "\nExecuting CHANGE_SUCCESS_CMD:\n"
 			"  echo \"hi from way-displays\"\n"
 			"\nChanges successful\n");
+
+	stable_free(env);
 }
 
 void handle_success__ok(void **state) {
@@ -666,7 +680,8 @@ void handle_failure__mode(void **state) {
 		.current.mode = &mode_cur,
 		.desired.mode = &mode_des,
 	};
-	head_changing_mode = &head;
+	displ->delta.element = MODE;
+	displ->delta.head = &head;
 
 	expect_value(__wrap_print_mode, t, ERROR);
 	expect_value(__wrap_print_mode, mode, &mode_des);
@@ -675,9 +690,7 @@ void handle_failure__mode(void **state) {
 
 	assert_log(ERROR, "\nChanges failed\n  nam:\n");
 
-	assert_null(head_changing_mode);
-
-	assert_null(head.current.mode);
+	assert_nul(head.current.mode);
 	assert_ptr_equal(head.desired.mode, &mode_des);
 
 	assert_ptr_equal(slist_find_equal_val(head.modes_failed, NULL, &mode_des), &mode_des);
@@ -692,7 +705,8 @@ void handle_failure__adaptive_sync(void **state) {
 		.current.adaptive_sync = ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_DISABLED,
 		.desired.adaptive_sync = ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_ENABLED,
 	};
-	head_changing_adaptive_sync = &head;
+	displ->delta.element = VRR_OFF;
+	displ->delta.head = &head;
 
 	handle_failure();
 
@@ -701,8 +715,6 @@ void handle_failure__adaptive_sync(void **state) {
 			"  To speed things up you can disable VRR for this display by adding the following or similar to your cfg.yaml\n"
 			"  VRR_OFF:\n"
 			"    - 'mod'\n");
-
-	assert_null(head_changing_adaptive_sync);
 
 	assert_true(head.adaptive_sync_failed);
 }

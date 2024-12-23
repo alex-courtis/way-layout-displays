@@ -24,8 +24,8 @@ struct IpcOperation {
 	int socket_client;
 	bool done;
 	int rc;
-	bool send_logs;		// not for bad or colliding requests
 	bool send_state;	// not for bad requests
+	struct SList *log_cap_lines;
 };
 
 struct IpcRequest {
@@ -64,7 +64,7 @@ struct SList *ipc_receive_responses(int socket_client, char **yaml);
 
 void ipc_request_free(struct IpcRequest *request);
 
-void ipc_response_free(void *response);
+void ipc_response_free(const void *response);
 
 void ipc_operation_free(struct IpcOperation *operation);
 

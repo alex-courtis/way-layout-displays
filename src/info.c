@@ -1,11 +1,13 @@
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <wayland-util.h>
 
 #include "info.h"
 
 #include "cfg.h"
 #include "convert.h"
+#include "displ.h"
 #include "head.h"
 #include "lid.h"
 #include "log.h"
@@ -330,11 +332,11 @@ void print_head_current(enum LogThreshold t, struct Head *head) {
 	log_(t, "    VRR:       %s", head->current.adaptive_sync == ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_ENABLED ? "on" : "off");
 
 	if (!head->current.enabled) {
-		log_(t, "     (disabled)");
+		log_(t, "    (disabled)");
 	}
 
 	if (lid_is_closed(head->name)) {
-		log_(t, "     (lid closed)");
+		log_(t, "    (lid closed)");
 	}
 }
 
@@ -373,10 +375,10 @@ void print_head_desired(enum LogThreshold t, struct Head *head) {
 			}
 		}
 		if (!head->current.enabled) {
-			log_(t, "     (enabled)");
+			log_(t, "    (enabled)");
 		}
 	} else {
-		log_(t, "     (disabled)");
+		log_(t, "    (disabled)");
 	}
 }
 
@@ -389,7 +391,7 @@ void print_head(enum LogThreshold t, enum InfoEvent event, struct Head *head) {
 	switch (event) {
 		case ARRIVED:
 		case NONE:
-			log_(t, "\n%s%s:", head->name, event == ARRIVED ? " Arrived" : "");
+			log_(t, "\n%s%s:", head->name ? head->name : "???", event == ARRIVED ? " Arrived" : "");
 			log_(t, "  info:");
 			if (head->name)
 				log_(t, "    name:      '%s'", head->name);
@@ -443,3 +445,113 @@ void print_heads(enum LogThreshold t, enum InfoEvent event, struct SList *heads)
 	}
 }
 
+char *delta_human(const enum DisplState state, const struct SList * const heads) {
+	if (!heads) {
+		return NULL;
+	}
+
+	char *buf = (char*)calloc(LEN_HUMAN, sizeof(char));
+	char *bufp = buf;
+
+	for (const struct SList *i = heads; i; i = i->nex) {
+		const struct Head * head = i->val;
+
+		char *desc_or_name = head->description ? head->description : head->name;
+
+		// disable in own operation
+		if (head->current.enabled && !head->desired.enabled) {
+			bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "%s  disabled\n", desc_or_name);
+			continue;
+		}
+
+		// enable in own operation
+		if (!head->current.enabled && head->desired.enabled) {
+			bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "%s  enabled\n", desc_or_name);
+			continue;
+		}
+
+		if (head_current_not_desired(head)) {
+			bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "%s\n", desc_or_name);
+
+			if (head->current.scale != head->desired.scale) {
+				bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "  scale:     %.3f -> %.3f\n",
+						wl_fixed_to_double(head->current.scale),
+						wl_fixed_to_double(head->desired.scale)
+						);
+			}
+
+			if (head->current.transform != head->desired.transform) {
+				bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "  transform: %s -> %s\n",
+						head->current.transform ? transform_name(head->current.transform) : "none",
+						head->desired.transform ? transform_name(head->desired.transform) : "none"
+						);
+			}
+
+			if (head->current.x != head->desired.x || head->current.y != head->desired.y) {
+				bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "  position:  %d,%d -> %d,%d\n",
+						head->current.x, head->current.y,
+						head->desired.x, head->desired.y
+						);
+			}
+		}
+	}
+
+	// strip trailing newline
+	if (bufp > buf) {
+		*(bufp - 1) = '\0';
+	}
+
+	return buf;
+}
+
+char *delta_human_mode(const enum DisplState state, const struct Head * const head) {
+	if (!head) {
+		return NULL;
+	}
+
+	char *buf = (char*)calloc(LEN_HUMAN, sizeof(char));
+	char *bufp = buf;
+
+	bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "%s\n  ",
+			head->description ? head->description : head->name
+			);
+
+	if (head->current.mode) {
+		bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "%dx%d@%dHz -> ",
+				head->current.mode->width,
+				head->current.mode->height,
+				mhz_to_hz_rounded(head->current.mode->refresh_mhz)
+				);
+	} else {
+		bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "(no mode) -> ");
+	}
+
+	if (head->desired.mode) {
+		bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "%dx%d@%dHz",
+				head->desired.mode->width,
+				head->desired.mode->height,
+				mhz_to_hz_rounded(head->desired.mode->refresh_mhz)
+				);
+	} else {
+		bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "(no mode)");
+	}
+
+	return buf;
+}
+
+
+char *delta_human_adaptive_sync(const enum DisplState state, const struct Head * const head) {
+	if (!head) {
+		return NULL;
+	}
+
+	char *buf = (char*)calloc(LEN_HUMAN, sizeof(char));
+	char *bufp = buf;
+
+	bufp += snprintf(bufp, LEN_HUMAN - (bufp - buf), "%s\n  VRR %s",
+			head->description ? head->description : head->name,
+			head->desired.adaptive_sync == ZWLR_OUTPUT_HEAD_V1_ADAPTIVE_SYNC_STATE_ENABLED ? "on" : "off"
+			);
+
+	return buf;
+}

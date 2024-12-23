@@ -17,6 +17,7 @@
 #include "log.h"
 #include "mode.h"
 #include "process.h"
+#include "stable.h"
 #include "wlr-output-management-unstable-v1.h"
 
 void position_heads(struct SList *heads) {
@@ -264,8 +265,8 @@ void desire(void) {
 
 void apply(void) {
 	struct SList *heads_changing = NULL;
-	head_changing_mode = NULL;
-	head_changing_adaptive_sync = NULL;
+
+	displ_delta_destroy();
 
 	// determine whether changes are needed before initiating output configuration
 	struct SList *i = heads;
@@ -280,27 +281,35 @@ void apply(void) {
 	struct zwlr_output_configuration_v1 *zwlr_config = zwlr_output_manager_v1_create_configuration(displ->zwlr_output_manager, displ->zwlr_output_manager_serial);
 	zwlr_output_configuration_v1_add_listener(zwlr_config, zwlr_output_configuration_listener(), displ);
 
-	if ((head_changing_mode = slist_find_val(heads, head_current_mode_not_desired))) {
+	struct Head *head;
+	if ((head = slist_find_val(heads, head_current_mode_not_desired))) {
+		displ_delta_init(MODE, head);
 
-		print_head(INFO, DELTA, head_changing_mode);
+		print_head(INFO, DELTA, head);
 
 		// mode change in its own operation; mode change desire is always enabled
-		head_changing_mode->zwlr_config_head = zwlr_output_configuration_v1_enable_head(zwlr_config, head_changing_mode->zwlr_head);
-		zwlr_output_configuration_head_v1_set_mode(head_changing_mode->zwlr_config_head, head_changing_mode->desired.mode->zwlr_mode);
+		head->zwlr_config_head = zwlr_output_configuration_v1_enable_head(zwlr_config, head->zwlr_head);
+		zwlr_output_configuration_head_v1_set_mode(head->zwlr_config_head, head->desired.mode->zwlr_mode);
 
-	} else if ((head_changing_adaptive_sync = slist_find_val(heads, head_current_adaptive_sync_not_desired))) {
+		displ->delta.human = delta_human_mode(displ->state, head);
 
-		print_head(INFO, DELTA, head_changing_adaptive_sync);
+	} else if ((head = slist_find_val(heads, head_current_adaptive_sync_not_desired))) {
+		displ_delta_init(VRR_OFF, head);
+
+		print_head(INFO, DELTA, head);
 
 		// adaptive sync change in its own operation; adaptive sync change desire is always enabled
-		head_changing_adaptive_sync->zwlr_config_head = zwlr_output_configuration_v1_enable_head(zwlr_config, head_changing_adaptive_sync->zwlr_head);
-		zwlr_output_configuration_head_v1_set_adaptive_sync(head_changing_adaptive_sync->zwlr_config_head, head_changing_adaptive_sync->desired.adaptive_sync);
+		head->zwlr_config_head = zwlr_output_configuration_v1_enable_head(zwlr_config, head->zwlr_head);
+		zwlr_output_configuration_head_v1_set_adaptive_sync(head->zwlr_config_head, head->desired.adaptive_sync);
+
+		displ->delta.human = delta_human_adaptive_sync(displ->state, head);
 
 	} else {
+		displ_delta_init(0, NULL);
 
 		print_heads(INFO, DELTA, heads);
 
-		// all changes except mode
+		// all other changes
 		for (i = heads_changing; i; i = i->nex) {
 			struct Head *head = (struct Head*)i->val;
 
@@ -313,11 +322,13 @@ void apply(void) {
 				zwlr_output_configuration_v1_disable_head(zwlr_config, head->zwlr_head);
 			}
 		}
+
+		displ->delta.human = delta_human(displ->state, heads_changing);
 	}
 
 	zwlr_output_configuration_v1_apply(zwlr_config);
 
-	displ->config_state = OUTSTANDING;
+	displ->state = OUTSTANDING;
 
 	slist_free(&heads_changing);
 }
@@ -330,66 +341,73 @@ void report_adaptive_sync_fail(struct Head *head) {
 	log_info("    - '%s'", head->model ? head->model : "monitor description");
 }
 
-void handle_success(void) {
-	if (head_changing_mode) {
+void handle_failure(void) {
+	switch(displ->delta.element) {
+		case MODE:
+			log_error("\nChanges failed");
 
-		// successful mode change is not always reported
-		head_changing_mode->current.mode = head_changing_mode->desired.mode;
+			// mode setting failure, try again
+			log_error("  %s:", displ->delta.head->name);
+			print_mode(ERROR, displ->delta.head->desired.mode);
+			slist_append(&displ->delta.head->modes_failed, displ->delta.head->desired.mode);
 
-		head_changing_mode = NULL;
+			// current mode may be misreported
+			displ->delta.head->current.mode = NULL;
 
-	} else if (head_changing_adaptive_sync) {
+			break;
 
-		struct Head *head = head_changing_adaptive_sync;
-		head_changing_adaptive_sync = NULL;
+		case VRR_OFF:
+			// river reports adaptive sync failure as failure
+			if (head_current_adaptive_sync_not_desired(displ->delta.head)) {
 
-		// sway reports adaptive sync failure as success
-		if (head_current_adaptive_sync_not_desired(head)) {
-			report_adaptive_sync_fail(head);
-			head->adaptive_sync_failed = true;
-			return;
-		}
+				report_adaptive_sync_fail(displ->delta.head);
+				displ->delta.head->adaptive_sync_failed = true;
+			}
+
+			break;
+		default:
+			log_error("\nChanges failed");
+
+			// any other failures are fatal
+			wd_exit_message(EXIT_FAILURE);
+			break;
 	}
 
-	if (!head_changing_adaptive_sync && cfg->change_success_cmd) {
+	displ_delta_destroy();
+}
+
+void handle_success(void) {
+	switch(displ->delta.element) {
+		case MODE:
+			// successful mode change is not always reported
+			displ->delta.head->current.mode = displ->delta.head->desired.mode;
+			break;
+
+		case VRR_OFF:
+			// sway reports adaptive sync failure as success
+			if (head_current_adaptive_sync_not_desired(displ->delta.head)) {
+				handle_failure();
+				return;
+			}
+			break;
+
+		default:
+			break;
+	}
+
+	if (cfg->change_success_cmd) {
 		log_info("\nExecuting CHANGE_SUCCESS_CMD:");
 		log_info("  %s", cfg->change_success_cmd);
 
-		spawn_sh_cmd(cfg->change_success_cmd);
+		const struct STable *env = stable_init(1, 1, false);
+		stable_put(env, "WD_CHANGE_SUCCESS_MSG", displ->delta.human);
+		spawn_sh_cmd(cfg->change_success_cmd, env);
+		stable_free(env);
 	}
+
+	displ_delta_destroy();
 
 	log_info("\nChanges successful");
-}
-
-void handle_failure(void) {
-
-	if (head_changing_mode) {
-		log_error("\nChanges failed");
-
-		// mode setting failure, try again
-		log_error("  %s:", head_changing_mode->name);
-		print_mode(ERROR, head_changing_mode->desired.mode);
-		slist_append(&head_changing_mode->modes_failed, head_changing_mode->desired.mode);
-
-		// current mode may be misreported
-		head_changing_mode->current.mode = NULL;
-
-		head_changing_mode = NULL;
-
-	} else if (head_changing_adaptive_sync && head_current_adaptive_sync_not_desired(head_changing_adaptive_sync)) {
-
-		// river reports adaptive sync failure as failure
-		report_adaptive_sync_fail(head_changing_adaptive_sync);
-		head_changing_adaptive_sync->adaptive_sync_failed = true;
-
-		head_changing_adaptive_sync = NULL;
-
-	} else {
-		log_error("\nChanges failed");
-
-		// any other failures are fatal
-		wd_exit_message(EXIT_FAILURE);
-	}
 }
 
 void layout(void) {
@@ -400,10 +418,10 @@ void layout(void) {
 	print_heads(INFO, DEPARTED, heads_departed);
 	slist_free_vals(&heads_departed, head_free);
 
-	switch (displ->config_state) {
+	switch (displ->state) {
 		case SUCCEEDED:
 			handle_success();
-			displ->config_state = IDLE;
+			displ->state = IDLE;
 			break;
 
 		case OUTSTANDING:
@@ -412,12 +430,12 @@ void layout(void) {
 
 		case FAILED:
 			handle_failure();
-			displ->config_state = IDLE;
+			displ->state = IDLE;
 			break;
 
 		case CANCELLED:
 			log_warn("\nChanges cancelled, retrying");
-			displ->config_state = IDLE;
+			displ->state = IDLE;
 			return;
 
 		case IDLE:

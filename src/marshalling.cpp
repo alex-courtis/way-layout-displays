@@ -8,6 +8,7 @@
 #include <yaml-cpp/emitter.h>
 #include <yaml-cpp/emittermanip.h>
 #include <yaml-cpp/exceptions.h>
+#include <yaml-cpp/node/detail/impl.h>
 #include <yaml-cpp/node/detail/iterator.h>
 #include <yaml-cpp/node/detail/iterator_fwd.h>
 #include <yaml-cpp/node/impl.h>
@@ -23,6 +24,7 @@
 extern "C" {
 #include "cfg.h"
 #include "convert.h"
+#include "fn.h"
 #include "global.h"
 #include "head.h"
 #include "ipc.h"
@@ -397,7 +399,7 @@ struct CfgValidated*& operator << (struct CfgValidated*& cfg_validated, const YA
 		for (const auto &order : orders) {
 			const std::string &order_str = order.as<std::string>();
 			const char *order_cstr = order_str.c_str();
-			if (!slist_find_equal(cfg->order_name_desc, slist_predicate_strcmp, order_cstr)) {
+			if (!slist_find_equal(cfg->order_name_desc, fn_comp_equals_strcmp, order_cstr)) {
 				if (!validate_regex(order_cstr, ORDER)) {
 					continue;
 				}
@@ -537,7 +539,7 @@ struct CfgValidated*& operator << (struct CfgValidated*& cfg_validated, const YA
 		for (const auto &off : offs) {
 			const std::string &off_str = off.as<std::string>();
 			const char *off_cstr = off_str.c_str();
-			if (!slist_find_equal(cfg->adaptive_sync_off_name_desc, slist_predicate_strcmp, off_cstr)) {
+			if (!slist_find_equal(cfg->adaptive_sync_off_name_desc, fn_comp_equals_strcmp, off_cstr)) {
 				if (!validate_regex(off_cstr, VRR_OFF)) {
 					continue;
 				}
@@ -551,7 +553,7 @@ struct CfgValidated*& operator << (struct CfgValidated*& cfg_validated, const YA
 		for (const auto &max : maxes) {
 			const std::string &max_str = max.as<std::string>();
 			const char *max_cstr = max_str.c_str();
-			if (!slist_find_equal(cfg->max_preferred_refresh_name_desc, slist_predicate_strcmp, max_cstr)) {
+			if (!slist_find_equal(cfg->max_preferred_refresh_name_desc, fn_comp_equals_strcmp, max_cstr)) {
 				if (!validate_regex(max_cstr, MAX_PREFERRED_REFRESH)) {
 					continue;
 				}
@@ -565,7 +567,7 @@ struct CfgValidated*& operator << (struct CfgValidated*& cfg_validated, const YA
 		for (const auto &disabled : disableds) {
 			const std::string &disabled_str = disabled.as<std::string>();
 			const char *disabled_cstr = disabled_str.c_str();
-			if (!slist_find_equal(cfg->disabled_name_desc, slist_predicate_strcmp, disabled_cstr)) {
+			if (!slist_find_equal(cfg->disabled_name_desc, fn_comp_equals_strcmp, disabled_cstr)) {
 				if (!validate_regex(disabled_cstr, DISABLED)) {
 					continue;
 				}
@@ -962,7 +964,7 @@ void marshal_messages(YAML::Emitter &e, struct IpcOperation *operation) {
 	bool began = false;
 	LogThreshold threshold = operation->request->log_threshold;
 
-	for (struct SList *i = log_cap_lines; i; i = i->nex) {
+	for (struct SList *i = operation->log_cap_lines; i; i = i->nex) {
 		struct LogCapLine *cap_line = (struct LogCapLine*)i->val;
 
 		if (!cap_line || !cap_line->line) {
@@ -1048,9 +1050,7 @@ char *marshal_ipc_response(struct IpcOperation *operation) {
 			}
 		}
 
-		if (operation->send_logs) {
-			marshal_messages(e, operation);
-		}
+		marshal_messages(e, operation);
 
 		e << YAML::Key << "RC" << YAML::Value << operation->rc;
 
@@ -1070,9 +1070,8 @@ char *marshal_ipc_response(struct IpcOperation *operation) {
 		log_error("marshalling ipc response: %s", e.what());
 	}
 
-	if (operation->send_logs) {
-		log_capture_clear();
-	}
+	// clear marshalled messages
+	log_cap_lines_free(&operation->log_cap_lines);
 
 	return yaml;
 }
